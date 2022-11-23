@@ -63,6 +63,7 @@ class Evaluator:
         self.detection_mode = detection_mode
         self.pred_format = pred_format
         self.gt_format = gt_format
+        self.set_name = None
 
         # The following lists all contain per-class data, i.e. all list have the length `n_classes + 1`,
         # where one element is for the background class, i.e. that element is just a dummy entry.
@@ -324,7 +325,7 @@ class Evaluator:
                 y_pred = y_pred_filtered
             # Convert the predicted box coordinates for the original images.
             y_pred = apply_inverse_transforms(y_pred, batch_inverse_transforms)
-            path = os.path.join(os.getcwd(), 'dataset/Detections/detection' + str(self.modelindex))
+            path = os.path.join(os.getcwd(), 'dataset/Detections/detection' + self.set_name + '/' + str(self.modelindex))
             if not os.path.exists(path):
                 os.makedirs(path)
             # Iterate over all batch items.

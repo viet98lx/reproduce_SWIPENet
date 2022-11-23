@@ -18,6 +18,7 @@ args_parser.add_argument('--model_names', type=str, default='ssd512_2013_adam16_
 args_parser.add_argument('--batch_size', type=int, default=16)
 args_parser.add_argument('--initial_epoch', type=int, default=0, help='initial epoch')
 args_parser.add_argument('--final_epoch', type=int, default=120, help='final epoch')
+args_parser.add_argument('--image_set_name', type=str, default='Main/test.txt', help='name of dataset to predict')
 args = args_parser.parse_args()
 
 try:
@@ -44,7 +45,7 @@ img_width = 512
 dataset_name='URPC2019'
 images_dir = './data/'+dataset_name+'/JPEGImages/'
 annotations_dir = './data/'+dataset_name+'/Annotations/'
-image_set_filename = './data/'+dataset_name+'/ImageSets/Main/test.txt'
+image_set_filename = './data/'+dataset_name+'/ImageSets/' + args.image_set_name
 
 # sample_weights_dir = os.getcwd()+'/dataset/'+dataset_name
 # if not os.path.exists(sample_weights_dir):
@@ -110,6 +111,7 @@ for modelname in modelnames:
                           data_generator=dataset,
                           model_mode=model_mode,
                           detection_mode=detection_mode)
+    evaluator.set_name = re.split("/",image_set_filename)[-1]
     results = evaluator(img_height=img_height,
                         img_width=img_width,
                         batch_size=args.batch_size,
@@ -126,6 +128,35 @@ for modelname in modelnames:
                         return_average_precisions=True,
                         verbose=True)
     modelindex=modelindex+1
+    nb_gt_per_class = evaluator.get_num_gt_per_class(
+                             ignore_neutral_boxes=True,
+                             verbose=True,
+                             ret=True)
+    print(nb_gt_per_class)
+
+    # true_positives, false_positives, cumulative_true_positives, cumulative_false_positives
+    tuple_results =  evaluator.match_predictions(
+                      ignore_neutral_boxes=True,
+                      matching_iou_threshold=0.5,
+                      border_pixels='include',
+                      sorting_algorithm='quicksort',
+                      verbose=True,
+                      ret=True)
+    print("TP: {}".format(tuple_results[0]))
+    print("FP: {}".format(tuple_results[1]))
+    print("CTP: {}".format(tuple_results[2]))
+    print("CFP: {}".format(tuple_results[3]))
+
+    # cumulative_precisions, cumulative_recalls
+    tuple_Prec_Recall = evaluator.compute_precision_recall(verbose=True, ret=True)
+    print("CPrec: {}".format(tuple_Prec_Recall[0]))
+    print("CRecall: {}".format(tuple_Prec_Recall[1]))
+
+    average_precisions = evaluator.compute_average_precisions(mode='sample', num_recall_points=11, verbose=True, ret=True)
+    print("Average Prec: {}".format(average_precisions))
+
+    mean_average_precision = evaluator.compute_mean_average_precision(ret=True)
+    print("MAP: {}".format(mean_average_precision))
 print('Detection results of multiple models have been saved in SWEIPENetv2/dataset/')
 
 # Ensembel the results of multiple models
@@ -278,154 +309,154 @@ def nms(boxes, overlap):
             count = count + 1
     return pick
 
-datasetpath= os.path.join(os.getcwd(), 'dataset/Detections')
-filenames = []
-image_ids = []
-labels = []
-box_numbers = 0
-detections_set_dirs = []
-
-for (root, dirs, files) in os.walk(datasetpath):
-    for dir in dirs:
-        detections_set_dirs.append(dir)
-
-weight_set = [0.158, 0.332]
-with open(image_set_filename) as f:
-    image_id = [line.strip() for line in f]
-    image_ids += image_id
-
-results = [list() for _ in range(4)]
-for im in image_ids:
-    # print(im+'\n')
-    txtname = im + '.txt'
-    allboxes = []
-    allclses = []
-    allconfids = []
-    for detections_dir in detections_set_dirs:
-        with open(os.path.join(datasetpath, detections_dir, txtname)) as f:
-            boxes = []
-            clses = []
-            confids = []
-            for line in f:
-                split_line = line.split()
-                class_name = split_line[0]
-                confid = float(split_line[1])
-                xmin = float(split_line[2])
-                ymin = float(split_line[3])
-                xmax = float(split_line[4])
-                ymax = float(split_line[5])
-                box = [xmin, ymin, xmax, ymax]
-                boxes.append(box)
-                clses.append(class_name)
-                confids.append(confid)
-        allclses.append(clses)
-        allboxes.append(boxes)
-        allconfids.append(confids)
-    allboxes = np.array(allboxes, dtype='float')
-    allconfids = np.array(allconfids, dtype='float')
-    for i in range(allboxes.shape[0]):
-        for j in range(allboxes.shape[1]):
-            curbox = allboxes[i, j]
-            # For curbox, construct a highly overlapped box set to vote for its cls and cooridiante.
-            set_box = []
-            set_cls = []
-            set_weight = []
-            set_confid = []
-            for k in range(allboxes.shape[0]):
-                # Compute the IoU similarities between all anchor boxes and all ground truth boxes for this batch item.
-                overlaps = iou(curbox, allboxes[k], coords='corners', mode='outer_product', border_pixels='half')
-                # For each ground truth box, get the anchor box to match with it.
-                # matches = match_multi(weight_matrix=similarities, threshold=0.5)
-                gt_match_index = np.argmax(overlaps)
-                set_box.append(allboxes[k][gt_match_index])
-                set_cls.append(allclses[k][gt_match_index])
-                set_weight.append(weight_set[k])
-                set_confid.append(allconfids[k][gt_match_index])
-            # Use box set to vote for its score and cooridiante.
-            if dataset_name == 'URPC2019':
-                cls_score = [0, 0, 0, 0]
-            else:
-                cls_score = [0, 0, 0]
-            box_score = 0
-            weight_score = 0
-            for m in range(len(set_box)):
-                # print(str(m)+set_cls[m])
-                class_id = pred_format[set_cls[m]]
-                cls_score[class_id] = cls_score[class_id] + set_weight[m] * set_confid[m]
-                box_score = box_score + set_weight[m] * set_box[m]
-                weight_score = weight_score + set_weight[m]
-            box_score = box_score / weight_score
-            allboxes[i, j] = box_score
-            allclses[i][j] = classes[np.argmax(cls_score)]
-            allconfids[i][j] = np.max(cls_score)
-
-    allboxes_concat = np.concatenate(allboxes, axis=0)
-    allclses_concat = np.concatenate(allclses, axis=0)
-    allconfids_concat = np.concatenate(allconfids, axis=0)
-    extend_allconfids = np.expand_dims(allconfids_concat, axis=1)
-    nms_preboxes = np.concatenate((allboxes_concat, extend_allconfids), axis=1)
-    nms_boxes_index = nms(nms_preboxes, 0.5)
-    nms_boxes = nms_preboxes[nms_boxes_index][:]
-    nms_clses = allclses_concat[nms_boxes_index]
-
-    seacucumber_index = np.where(nms_clses == 'seacucumber')
-    seacucumber_boxes = nms_boxes[seacucumber_index]
-    seacucumber_clsnames = nms_clses[seacucumber_index]
-    for l in range(np.shape(seacucumber_index)[1]):
-        seacucumber_imname = im
-        boxstr = im + ' ' + str(round(seacucumber_boxes[l][4], 4)) + ' ' + str(
-            int(seacucumber_boxes[l][0])) + ' ' + str(int(seacucumber_boxes[l][1])) + ' ' + str(
-            int(seacucumber_boxes[l][2])) + ' ' + str(int(seacucumber_boxes[l][3]))
-        results[2].append(boxstr)
-
-    seaurchin_index = np.where(nms_clses == 'seaurchin')
-    seaurchin_boxes = nms_boxes[seaurchin_index]
-    seaurchin_clsnames = nms_clses[seaurchin_index]
-    for l in range(np.shape(seaurchin_index)[1]):
-        boxstr = im + ' ' + str(round(seaurchin_boxes[l][4], 4)) + ' ' + str(
-            int(seaurchin_boxes[l][0])) + ' ' + str(int(seaurchin_boxes[l][1])) + ' ' + str(
-            int(seaurchin_boxes[l][2])) + ' ' + str(int(seaurchin_boxes[l][3]))
-        results[0].append(boxstr)
-
-    scallop_index = np.where(nms_clses == 'scallop')
-    scallop_boxes = nms_boxes[scallop_index]
-    scallop_clsnames = nms_clses[scallop_index]
-    for l in range(np.shape(scallop_index)[1]):
-        boxstr = im + ' ' + str(round(scallop_boxes[l][4], 4)) + ' ' + str(int(scallop_boxes[l][0])) + ' ' + str(
-            int(scallop_boxes[l][1])) + ' ' + str(int(scallop_boxes[l][2])) + ' ' + str(int(scallop_boxes[l][3]))
-        results[3].append(boxstr)
-
-    starfish_index = np.where(nms_clses == 'starfish')
-    starfish_boxes = nms_boxes[starfish_index]
-    starfish_clsnames = nms_clses[starfish_index]
-    for l in range(np.shape(starfish_index)[1]):
-        boxstr = im + ' ' + str(round(starfish_boxes[l][4], 4)) + ' ' + str(int(starfish_boxes[l][0])) + ' ' + str(
-            int(starfish_boxes[l][1])) + ' ' + str(int(starfish_boxes[l][2])) + ' ' + str(int(starfish_boxes[l][3]))
-        results[1].append(boxstr)
-
-# {'seacucumber': 2, 'seaurchin': 0, 'scallop': 3, 'starfish': 1}
-file_fid = open(datasetpath + '/seacucumber.txt', 'w')
-for onestr in results[2]:
-    boxstr = onestr
-    file_fid.write(boxstr + '\n')
-file_fid.close()
-
-file_fid = open(datasetpath + '/seaurchin.txt', 'w')
-for onestr in results[0]:
-    boxstr = onestr
-    file_fid.write(boxstr + '\n')
-file_fid.close()
-
-file_fid = open(datasetpath + '/scallop.txt', 'w')
-for onestr in results[3]:
-    boxstr = onestr
-    file_fid.write(boxstr + '\n')
-file_fid.close()
-
-file_fid = open(datasetpath + '/starfish.txt', 'w')
-for onestr in results[1]:
-    boxstr = onestr
-    file_fid.write(boxstr + '\n')
-file_fid.close()
-
-print('The detection results of the final ensemble model have been saved in dataset/Detections/')
+# datasetpath= os.path.join(os.getcwd(), 'dataset/Detections')
+# filenames = []
+# image_ids = []
+# labels = []
+# box_numbers = 0
+# detections_set_dirs = []
+#
+# for (root, dirs, files) in os.walk(datasetpath):
+#     for dir in dirs:
+#         detections_set_dirs.append(dir)
+#
+# weight_set = [0.158, 0.332]
+# with open(image_set_filename) as f:
+#     image_id = [line.strip() for line in f]
+#     image_ids += image_id
+#
+# results = [list() for _ in range(4)]
+# for im in image_ids:
+#     # print(im+'\n')
+#     txtname = im + '.txt'
+#     allboxes = []
+#     allclses = []
+#     allconfids = []
+#     for detections_dir in detections_set_dirs:
+#         with open(os.path.join(datasetpath, detections_dir, txtname)) as f:
+#             boxes = []
+#             clses = []
+#             confids = []
+#             for line in f:
+#                 split_line = line.split()
+#                 class_name = split_line[0]
+#                 confid = float(split_line[1])
+#                 xmin = float(split_line[2])
+#                 ymin = float(split_line[3])
+#                 xmax = float(split_line[4])
+#                 ymax = float(split_line[5])
+#                 box = [xmin, ymin, xmax, ymax]
+#                 boxes.append(box)
+#                 clses.append(class_name)
+#                 confids.append(confid)
+#         allclses.append(clses)
+#         allboxes.append(boxes)
+#         allconfids.append(confids)
+#     allboxes = np.array(allboxes, dtype='float')
+#     allconfids = np.array(allconfids, dtype='float')
+#     for i in range(allboxes.shape[0]):
+#         for j in range(allboxes.shape[1]):
+#             curbox = allboxes[i, j]
+#             # For curbox, construct a highly overlapped box set to vote for its cls and cooridiante.
+#             set_box = []
+#             set_cls = []
+#             set_weight = []
+#             set_confid = []
+#             for k in range(allboxes.shape[0]):
+#                 # Compute the IoU similarities between all anchor boxes and all ground truth boxes for this batch item.
+#                 overlaps = iou(curbox, allboxes[k], coords='corners', mode='outer_product', border_pixels='half')
+#                 # For each ground truth box, get the anchor box to match with it.
+#                 # matches = match_multi(weight_matrix=similarities, threshold=0.5)
+#                 gt_match_index = np.argmax(overlaps)
+#                 set_box.append(allboxes[k][gt_match_index])
+#                 set_cls.append(allclses[k][gt_match_index])
+#                 set_weight.append(weight_set[k])
+#                 set_confid.append(allconfids[k][gt_match_index])
+#             # Use box set to vote for its score and cooridiante.
+#             if dataset_name == 'URPC2019':
+#                 cls_score = [0, 0, 0, 0]
+#             else:
+#                 cls_score = [0, 0, 0]
+#             box_score = 0
+#             weight_score = 0
+#             for m in range(len(set_box)):
+#                 # print(str(m)+set_cls[m])
+#                 class_id = pred_format[set_cls[m]]
+#                 cls_score[class_id] = cls_score[class_id] + set_weight[m] * set_confid[m]
+#                 box_score = box_score + set_weight[m] * set_box[m]
+#                 weight_score = weight_score + set_weight[m]
+#             box_score = box_score / weight_score
+#             allboxes[i, j] = box_score
+#             allclses[i][j] = classes[np.argmax(cls_score)]
+#             allconfids[i][j] = np.max(cls_score)
+#
+#     allboxes_concat = np.concatenate(allboxes, axis=0)
+#     allclses_concat = np.concatenate(allclses, axis=0)
+#     allconfids_concat = np.concatenate(allconfids, axis=0)
+#     extend_allconfids = np.expand_dims(allconfids_concat, axis=1)
+#     nms_preboxes = np.concatenate((allboxes_concat, extend_allconfids), axis=1)
+#     nms_boxes_index = nms(nms_preboxes, 0.5)
+#     nms_boxes = nms_preboxes[nms_boxes_index][:]
+#     nms_clses = allclses_concat[nms_boxes_index]
+#
+#     seacucumber_index = np.where(nms_clses == 'seacucumber')
+#     seacucumber_boxes = nms_boxes[seacucumber_index]
+#     seacucumber_clsnames = nms_clses[seacucumber_index]
+#     for l in range(np.shape(seacucumber_index)[1]):
+#         seacucumber_imname = im
+#         boxstr = im + ' ' + str(round(seacucumber_boxes[l][4], 4)) + ' ' + str(
+#             int(seacucumber_boxes[l][0])) + ' ' + str(int(seacucumber_boxes[l][1])) + ' ' + str(
+#             int(seacucumber_boxes[l][2])) + ' ' + str(int(seacucumber_boxes[l][3]))
+#         results[2].append(boxstr)
+#
+#     seaurchin_index = np.where(nms_clses == 'seaurchin')
+#     seaurchin_boxes = nms_boxes[seaurchin_index]
+#     seaurchin_clsnames = nms_clses[seaurchin_index]
+#     for l in range(np.shape(seaurchin_index)[1]):
+#         boxstr = im + ' ' + str(round(seaurchin_boxes[l][4], 4)) + ' ' + str(
+#             int(seaurchin_boxes[l][0])) + ' ' + str(int(seaurchin_boxes[l][1])) + ' ' + str(
+#             int(seaurchin_boxes[l][2])) + ' ' + str(int(seaurchin_boxes[l][3]))
+#         results[0].append(boxstr)
+#
+#     scallop_index = np.where(nms_clses == 'scallop')
+#     scallop_boxes = nms_boxes[scallop_index]
+#     scallop_clsnames = nms_clses[scallop_index]
+#     for l in range(np.shape(scallop_index)[1]):
+#         boxstr = im + ' ' + str(round(scallop_boxes[l][4], 4)) + ' ' + str(int(scallop_boxes[l][0])) + ' ' + str(
+#             int(scallop_boxes[l][1])) + ' ' + str(int(scallop_boxes[l][2])) + ' ' + str(int(scallop_boxes[l][3]))
+#         results[3].append(boxstr)
+#
+#     starfish_index = np.where(nms_clses == 'starfish')
+#     starfish_boxes = nms_boxes[starfish_index]
+#     starfish_clsnames = nms_clses[starfish_index]
+#     for l in range(np.shape(starfish_index)[1]):
+#         boxstr = im + ' ' + str(round(starfish_boxes[l][4], 4)) + ' ' + str(int(starfish_boxes[l][0])) + ' ' + str(
+#             int(starfish_boxes[l][1])) + ' ' + str(int(starfish_boxes[l][2])) + ' ' + str(int(starfish_boxes[l][3]))
+#         results[1].append(boxstr)
+#
+# # {'seacucumber': 2, 'seaurchin': 0, 'scallop': 3, 'starfish': 1}
+# file_fid = open(datasetpath + '/seacucumber.txt', 'w')
+# for onestr in results[2]:
+#     boxstr = onestr
+#     file_fid.write(boxstr + '\n')
+# file_fid.close()
+#
+# file_fid = open(datasetpath + '/seaurchin.txt', 'w')
+# for onestr in results[0]:
+#     boxstr = onestr
+#     file_fid.write(boxstr + '\n')
+# file_fid.close()
+#
+# file_fid = open(datasetpath + '/scallop.txt', 'w')
+# for onestr in results[3]:
+#     boxstr = onestr
+#     file_fid.write(boxstr + '\n')
+# file_fid.close()
+#
+# file_fid = open(datasetpath + '/starfish.txt', 'w')
+# for onestr in results[1]:
+#     boxstr = onestr
+#     file_fid.write(boxstr + '\n')
+# file_fid.close()
+#
+# print('The detection results of the final ensemble model have been saved in dataset/Detections/')
